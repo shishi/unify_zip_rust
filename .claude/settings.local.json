@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(rg:*)",
+      "Bash(/home/shishi/.cargo/bin/rg -n \"int main\\(|int wmain\\(|int _tmain\\(\" /home/shishi/dev/src/github.com/shishi/unify_zip/original_project/UnifyZip/main.cpp)",
+      "Bash(grep:*)",
+      "Bash(cargo check:*)",
+      "Bash(cargo:*)",
+      "Bash(RUST_LOG=debug cargo test test_complete_archive_processing_workflow -- --nocapture)",
+      "Bash(rustup target:*)",
+      "Bash(ls:*)",
+      "Bash(cp:*)",
+      "Bash(/home/shishi/.cargo/bin/rg -n \"ExcludeFile|AppendFile\" /home/shishi/dev/src/github.com/shishi/unify_zip/original_project/UnifyZip/main.cpp)",
+      "Bash(/home/shishi/.cargo/bin/rg -A 5 -B 5 \"FileTimeMode|FolderTimeMode\" /home/shishi/dev/src/github.com/shishi/unify_zip/original_project/UnifyZip/main.cpp)"
+    ],
+    "deny": []
+  }
+}
