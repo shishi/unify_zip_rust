@@ -51,23 +51,16 @@ fn create_test_zip_archive(zip_path: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Create a test INI configuration file
+/// Create a test INI configuration file.
+/// UsesRecycleBin=0 keeps the test independent of a trash directory being
+/// available for the temporary location.
 fn create_test_config(config_path: &Path) -> anyhow::Result<()> {
-    let config_content = r#"[General]
-PriorityClass=2
+    let config_content = r#"[Setting]
 SearchSubfolders=1
 ExcludeFile=.*\.(tmp|bak|DS_Store)$|Thumbs\.db$
-CreateFolder=0
-OverwriteCompress=1
-DeleteFiles=1
-MoveToRecycleBin=1
-SuppressGUI=1
-
-[ZIP]
-CompressType=9
-PasswordZip=0
-EncryptionMethod=0
-SFXType=0
+RemovesRedundantFolder=1
+UsesRecycleBin=0
+CompressLevel=9
 "#;
     fs::write(config_path, config_content)?;
     Ok(())

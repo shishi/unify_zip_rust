@@ -73,7 +73,7 @@ fn test_include_file_patterns() {
     let include_regex = Regex::new(r".*\.(txt|pdf|ppt|csv)$").unwrap();
     let filtered_count = FileFilter::filter_entries(&mut entries, Some(&include_regex), None);
 
-    assert_eq!(filtered_count, 4); // Should exclude image.jpg, video.mp4, folder1/photo.png
+    assert_eq!(filtered_count, 3); // Should exclude image.jpg, video.mp4, folder1/photo.png
     assert_eq!(entries.len(), 6); // 5 files + 1 folder
 
     let remaining_files: Vec<&str> = entries
