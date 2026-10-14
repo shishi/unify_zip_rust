@@ -110,13 +110,18 @@ impl ArchiveProcessor {
         }
 
         // Step 3: Remove redundant directories
-        self.remove_redundant_directories(&mut entries)?;
+        let redundant_prefix = self.remove_redundant_directories(&mut entries)?;
 
         // Step 4: Check for remarkable files and warn if necessary
         self.check_remarkable_files(&entries)?;
 
         // Step 5: Create new ZIP archive
-        let output_path = self.create_output_archive(&entries, extract_path, archive_path)?;
+        let output_path = self.create_output_archive(
+            &entries,
+            extract_path,
+            archive_path,
+            redundant_prefix.as_deref(),
+        )?;
 
         // Step 6: Move original archive to trash/recycle bin
         self.dispose_original_archive(archive_path)?;
@@ -176,22 +181,25 @@ impl ArchiveProcessor {
         Ok(())
     }
 
-    /// Remove redundant directory structures
-    fn remove_redundant_directories(&self, entries: &mut Vec<ArchiveEntry>) -> Result<()> {
+    /// Remove redundant directory structures.
+    /// Returns the prefix that was stripped, if any.
+    fn remove_redundant_directories(&self, entries: &mut Vec<ArchiveEntry>) -> Result<Option<PathBuf>> {
         if self.config.removes_redundant_folder == 0 {
-            return Ok(()); // Redundant folder removal disabled
+            return Ok(None); // Redundant folder removal disabled
         }
 
         debug!("Analyzing redundant directories");
 
-        if let Some(redundant_prefix) = PathUtils::analyze_redundant_folders(entries) {
-            info!("Found redundant directory structure: {:?}", redundant_prefix);
-            PathUtils::remove_redundant_prefix(entries, &redundant_prefix)?;
-        } else {
-            debug!("No redundant directory structure found");
+        let redundant_prefix = PathUtils::analyze_redundant_folders(entries);
+        match &redundant_prefix {
+            Some(prefix) => {
+                info!("Found redundant directory structure: {:?}", prefix);
+                PathUtils::remove_redundant_prefix(entries, prefix)?;
+            }
+            None => debug!("No redundant directory structure found"),
         }
 
-        Ok(())
+        Ok(redundant_prefix)
     }
 
     /// Check for remarkable files and issue warnings if necessary
@@ -237,6 +245,7 @@ impl ArchiveProcessor {
         entries: &[ArchiveEntry],
         extract_path: &Path,
         original_archive_path: &Path,
+        redundant_prefix: Option<&Path>,
     ) -> Result<PathBuf> {
         debug!("Creating new ZIP archive");
 
@@ -258,7 +267,7 @@ impl ArchiveProcessor {
         }
 
         // Determine output filename
-        let output_filename = self.determine_output_filename(original_archive_path, entries)?;
+        let output_filename = self.determine_output_filename(original_archive_path, redundant_prefix)?;
         let temp_output_path = extract_path.join("output.zip");
 
         // Create the ZIP file
@@ -274,41 +283,28 @@ impl ArchiveProcessor {
         Ok(final_temp_path)
     }
 
-    /// Determine the output filename for the new archive
+    /// Determine the output filename for the new archive.
+    /// In mode 2 the archive is named after the top-level redundant folder
+    /// that was removed, as in the original UnifyZip.
     fn determine_output_filename(
         &self,
         original_path: &Path,
-        entries: &[ArchiveEntry],
+        redundant_prefix: Option<&Path>,
     ) -> Result<String> {
         let base_name = original_path
             .file_stem()
             .and_then(|s| s.to_str())
             .unwrap_or("archive");
 
-        let output_name = if self.config.removes_redundant_folder == 2 {
-            // Use the name of the top-level folder if it exists
-            if let Some(top_folder) = self.find_top_level_folder(entries) {
-                format!("{}.zip", top_folder)
-            } else {
-                format!("{}.zip", base_name)
-            }
+        let folder_name = if self.config.removes_redundant_folder == 2 {
+            redundant_prefix
+                .and_then(|prefix| prefix.components().next())
+                .and_then(|component| component.as_os_str().to_str())
         } else {
-            format!("{}.zip", base_name)
+            None
         };
 
-        Ok(output_name)
-    }
-
-    /// Find the top-level folder name from entries
-    fn find_top_level_folder(&self, entries: &[ArchiveEntry]) -> Option<String> {
-        for entry in entries {
-            if entry.is_dir && entry.path.components().count() == 1 {
-                return entry.path.file_name()
-                    .and_then(|s| s.to_str())
-                    .map(|s| s.to_string());
-            }
-        }
-        None
+        Ok(format!("{}.zip", folder_name.unwrap_or(base_name)))
     }
 
     /// Move original archive to trash/recycle bin
@@ -373,9 +369,8 @@ mod tests {
         let processor = ArchiveProcessor::new(config, false);
         
         let original_path = Path::new("/test/archive.rar");
-        let entries = vec![];
-        
-        let filename = processor.determine_output_filename(original_path, &entries).unwrap();
+
+        let filename = processor.determine_output_filename(original_path, Some(Path::new("wrapper/content"))).unwrap();
         assert_eq!(filename, "archive.zip");
     }
 
@@ -386,20 +381,12 @@ mod tests {
         let processor = ArchiveProcessor::new(config, false);
         
         let original_path = Path::new("/test/archive.rar");
-        let entries = vec![
-            ArchiveEntry {
-                path: PathBuf::from("content"),
-                original_path: None,
-                size: 0,
-                compressed_size: 0,
-                modified_time: None,
-                is_dir: true,
-                is_encrypted: false,
-            }
-        ];
-        
-        let filename = processor.determine_output_filename(original_path, &entries).unwrap();
-        assert_eq!(filename, "content.zip");
+
+        let filename = processor.determine_output_filename(original_path, Some(Path::new("wrapper/content"))).unwrap();
+        assert_eq!(filename, "wrapper.zip");
+
+        let filename = processor.determine_output_filename(original_path, None).unwrap();
+        assert_eq!(filename, "archive.zip");
     }
 
     #[test]

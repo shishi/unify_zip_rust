@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use log::{debug, info, warn};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
@@ -10,43 +10,6 @@ use crate::archive::ArchiveEntry;
 pub struct PathUtils;
 
 impl PathUtils {
-    /// Find the common path prefix among a list of archive entries
-    pub fn find_common_prefix(entries: &[ArchiveEntry]) -> Option<PathBuf> {
-        if entries.is_empty() {
-            return None;
-        }
-
-        // Get all file paths (excluding directories)
-        let file_paths: Vec<&PathBuf> = entries
-            .iter()
-            .filter(|entry| !entry.is_dir)
-            .map(|entry| &entry.path)
-            .collect();
-
-        if file_paths.is_empty() {
-            return None;
-        }
-
-        // Start with the first path as the common prefix
-        let mut common_prefix = file_paths[0].clone();
-
-        // For each subsequent path, find the common components
-        for path in file_paths.iter().skip(1) {
-            common_prefix = Self::find_common_path_components(&common_prefix, path);
-            
-            // If no common prefix, break early
-            if common_prefix.as_os_str().is_empty() {
-                break;
-            }
-        }
-
-        if common_prefix.as_os_str().is_empty() {
-            None
-        } else {
-            Some(common_prefix)
-        }
-    }
-
     /// Find common path components between two paths
     fn find_common_path_components(path1: &Path, path2: &Path) -> PathBuf {
         let mut common = PathBuf::new();
@@ -65,106 +28,40 @@ impl PathUtils {
         common
     }
 
-    /// Analyze if directory structure has redundant nesting
-    /// Returns the redundant path prefix if found
+    /// Find the redundant folder prefix shared by every entry.
+    ///
+    /// Mirrors the original UnifyZip behaviour: the redundant path is the
+    /// deepest directory that contains every file and every empty directory.
+    /// Directories that contain other entries carry no information of their
+    /// own. Returns `None` when the archive has no files or when the entries
+    /// do not all live under one top-level directory.
     pub fn analyze_redundant_folders(entries: &[ArchiveEntry]) -> Option<PathBuf> {
-        if entries.is_empty() {
+        if !entries.iter().any(|entry| !entry.is_dir) {
             return None;
         }
 
-        // Get all file paths (non-directories)
-        let file_paths: Vec<&PathBuf> = entries
+        let ancestors: HashSet<&Path> = entries
             .iter()
-            .filter(|entry| !entry.is_dir)
-            .map(|entry| &entry.path)
+            .flat_map(|entry| entry.path.ancestors().skip(1))
             .collect();
 
-        if file_paths.is_empty() {
-            return None;
-        }
-
-        // Find the common prefix of all files
-        let mut common_prefix = file_paths[0].clone();
-        for path in file_paths.iter().skip(1) {
-            common_prefix = Self::find_common_path_components(&common_prefix, path);
-            if common_prefix.as_os_str().is_empty() {
+        let mut common: Option<PathBuf> = None;
+        for entry in entries {
+            if entry.is_dir && ancestors.contains(entry.path.as_path()) {
+                continue;
+            }
+            let dir = entry.path.parent().map(Path::to_path_buf).unwrap_or_default();
+            let prefix = match common {
+                None => dir,
+                Some(prefix) => Self::find_common_path_components(&prefix, &dir),
+            };
+            if prefix.as_os_str().is_empty() {
                 return None;
             }
+            common = Some(prefix);
         }
-
-        // Check if this common prefix represents a redundant structure
-        // A structure is redundant if the common prefix is a directory that contains
-        // only one subdirectory at each level until we reach files
-        if common_prefix.components().count() > 0 {
-            // Analyze the directory structure to see if it's truly redundant
-            let mut current_prefix = PathBuf::new();
-            let mut found_redundant = false;
-
-            for component in common_prefix.components() {
-                current_prefix.push(component);
-                
-                // Check if at this level, there's only one subdirectory
-                let children_at_level: HashSet<PathBuf> = file_paths
-                    .iter()
-                    .filter_map(|path| {
-                        if let Ok(relative) = path.strip_prefix(&current_prefix) {
-                            relative.components().next().map(|comp| {
-                                current_prefix.join(comp.as_os_str())
-                            })
-                        } else {
-                            None
-                        }
-                    })
-                    .collect();
-
-                // If there's only one unique child at this level, it might be redundant
-                if children_at_level.len() == 1 {
-                    found_redundant = true;
-                } else {
-                    break;
-                }
-            }
-
-            if found_redundant && common_prefix != PathBuf::from("") {
-                // Find the actual redundant prefix
-                // Start from the beginning and find how many levels are truly redundant
-                let mut redundant_prefix = PathBuf::new();
-                
-                for component in common_prefix.components() {
-                    let test_prefix = redundant_prefix.join(component);
-                    
-                    // Check if all files have this as a prefix and if there's only one child directory
-                    let remaining_paths: Vec<PathBuf> = file_paths
-                        .iter()
-                        .filter_map(|path| path.strip_prefix(&test_prefix).ok().map(|p| p.to_path_buf()))
-                        .collect();
-                    
-                    if !remaining_paths.is_empty() {
-                        let first_components: HashSet<_> = remaining_paths
-                            .iter()
-                            .filter_map(|path| path.components().next().map(|c| c.as_os_str()))
-                            .collect();
-                        
-                        // If there's only one unique first component, this level is redundant
-                        if first_components.len() == 1 {
-                            redundant_prefix = test_prefix;
-                        } else {
-                            break;
-                        }
-                    } else {
-                        break;
-                    }
-                }
-
-                if !redundant_prefix.as_os_str().is_empty() {
-                    return Some(redundant_prefix);
-                }
-            }
-        }
-
-        None
+        common
     }
-
 
     /// Remove redundant directory prefix from archive entries
     pub fn remove_redundant_prefix(
@@ -173,21 +70,25 @@ impl PathUtils {
     ) -> Result<()> {
         debug!("Removing redundant prefix: {:?}", redundant_prefix);
 
-        for entry in entries.iter_mut() {
-            if let Ok(relative_path) = entry.path.strip_prefix(redundant_prefix) {
+        entries.retain_mut(|entry| match entry.path.strip_prefix(redundant_prefix) {
+            // The redundant folder itself disappears
+            Ok(relative_path) if relative_path.as_os_str().is_empty() => false,
+            Ok(relative_path) => {
                 // Save original path before modification
                 if entry.original_path.is_none() {
                     entry.original_path = Some(entry.path.clone());
                 }
                 entry.path = relative_path.to_path_buf();
                 debug!("Updated path: {:?}", entry.path);
-            } else {
-                warn!("Failed to strip prefix from path: {:?}", entry.path);
+                true
             }
-        }
-
-        // Remove any entries that would become empty paths
-        entries.retain(|entry| !entry.path.as_os_str().is_empty());
+            // Directories above the redundant folder disappear with it
+            Err(_) if redundant_prefix.starts_with(&entry.path) => false,
+            Err(_) => {
+                warn!("Failed to strip prefix from path: {:?}", entry.path);
+                true
+            }
+        });
 
         info!("Removed redundant prefix, {} entries remaining", entries.len());
         Ok(())
@@ -474,29 +375,6 @@ mod tests {
     }
 
     #[test]
-    fn test_find_common_prefix() {
-        let entries = vec![
-            create_test_entry("folder1/folder2/file1.txt", false),
-            create_test_entry("folder1/folder2/file2.txt", false),
-            create_test_entry("folder1/folder2/subfolder/file3.txt", false),
-        ];
-
-        let common_prefix = PathUtils::find_common_prefix(&entries);
-        assert_eq!(common_prefix, Some(PathBuf::from("folder1/folder2")));
-    }
-
-    #[test]
-    fn test_find_common_prefix_no_common() {
-        let entries = vec![
-            create_test_entry("folder1/file1.txt", false),
-            create_test_entry("folder2/file2.txt", false),
-        ];
-
-        let common_prefix = PathUtils::find_common_prefix(&entries);
-        assert_eq!(common_prefix, None);
-    }
-
-    #[test]
     fn test_analyze_redundant_folders() {
         let entries = vec![
             create_test_entry("wrapper", true),
@@ -506,7 +384,7 @@ mod tests {
         ];
 
         let redundant = PathUtils::analyze_redundant_folders(&entries);
-        assert_eq!(redundant, Some(PathBuf::from("wrapper")));
+        assert_eq!(redundant, Some(PathBuf::from("wrapper/content")));
     }
 
     #[test]

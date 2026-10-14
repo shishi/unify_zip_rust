@@ -27,7 +27,7 @@ fn test_analyze_redundant_folders_simple_case() {
     ];
 
     let redundant = PathUtils::analyze_redundant_folders(&entries);
-    assert_eq!(redundant, Some(PathBuf::from("wrapper")));
+    assert_eq!(redundant, Some(PathBuf::from("wrapper/content")));
 }
 
 #[test]
@@ -43,8 +43,8 @@ fn test_analyze_redundant_folders_deep_nesting() {
     ];
 
     let redundant = PathUtils::analyze_redundant_folders(&entries);
-    // Should detect that we can remove the first 4 levels
-    assert_eq!(redundant, Some(PathBuf::from("level1")));
+    // Every level down to actual_content holds nothing but the next level, so all of them go
+    assert_eq!(redundant, Some(PathBuf::from("level1/level2/level3/level4/actual_content")));
 }
 
 #[test]
@@ -72,8 +72,8 @@ fn test_analyze_redundant_folders_multiple_branches() {
     ];
 
     let redundant = PathUtils::analyze_redundant_folders(&entries);
-    // Since root has multiple child directories with files, it shouldn't be considered redundant
-    assert_eq!(redundant, None);
+    // root wraps both branches, so root itself is redundant; the branches stay
+    assert_eq!(redundant, Some(PathBuf::from("root")));
 }
 
 #[test]
@@ -87,8 +87,8 @@ fn test_analyze_redundant_folders_files_at_intermediate_level() {
     ];
 
     let redundant = PathUtils::analyze_redundant_folders(&entries);
-    // Since there's a file at the wrapper level, it's not redundant
-    assert_eq!(redundant, None);
+    // The file at the wrapper level stops the prefix from going deeper than wrapper
+    assert_eq!(redundant, Some(PathBuf::from("wrapper")));
 }
 
 #[test]
@@ -145,7 +145,7 @@ fn test_complex_redundant_structure() {
     ];
 
     let redundant = PathUtils::analyze_redundant_folders(&entries);
-    assert_eq!(redundant, Some(PathBuf::from("app-v1.2.3")));
+    assert_eq!(redundant, Some(PathBuf::from("app-v1.2.3/dist/src")));
 
     // Test the full process
     let mut entries_copy = entries.clone();
@@ -159,17 +159,11 @@ fn test_complex_redundant_structure() {
         .map(|e| e.path.to_string_lossy().to_string())
         .collect();
 
-    // Should start with "dist" now
-    assert!(final_paths.contains(&"dist".to_string()));
-    assert!(final_paths.contains(&"dist/src".to_string()));
-    assert!(final_paths.contains(&"dist/src/main.js".to_string()));
-    assert!(final_paths.contains(&"dist/src/style.css".to_string()));
-    assert!(final_paths.contains(&"dist/src/assets".to_string()));
-    assert!(final_paths.contains(&"dist/src/assets/logo.png".to_string()));
-    assert!(final_paths.contains(&"dist/src/assets/font.woff".to_string()));
-
-    // Should not contain the original redundant prefix
-    assert!(!final_paths.iter().any(|p| p.starts_with("app-v1.2.3")));
+    // The contents of src are now at the root
+    assert_eq!(
+        final_paths,
+        vec!["main.js", "style.css", "assets", "assets/logo.png", "assets/font.woff"]
+    );
 }
 
 #[test]
@@ -183,27 +177,24 @@ fn test_edge_case_single_file_in_deep_structure() {
     ];
 
     let redundant = PathUtils::analyze_redundant_folders(&entries);
-    assert_eq!(redundant, Some(PathBuf::from("very")));
+    assert_eq!(redundant, Some(PathBuf::from("very/deep/nested/structure")));
 
     let mut entries_copy = entries.clone();
     if let Some(redundant_path) = redundant {
         PathUtils::remove_redundant_prefix(&mut entries_copy, &redundant_path).unwrap();
     }
 
-    // Should end up with just the file at the root and necessary parent directories
+    // Should end up with just the file at the root
     let final_paths: Vec<String> = entries_copy
         .iter()
         .map(|e| e.path.to_string_lossy().to_string())
         .collect();
 
-    assert!(final_paths.contains(&"deep".to_string()));
-    assert!(final_paths.contains(&"deep/nested".to_string()));
-    assert!(final_paths.contains(&"deep/nested/structure".to_string()));
-    assert!(final_paths.contains(&"deep/nested/structure/single_file.txt".to_string()));
+    assert_eq!(final_paths, vec!["single_file.txt"]);
 }
 
 #[test]
-fn test_no_redundancy_with_mixed_content() {
+fn test_wrapper_with_files_and_subdirectories() {
     let entries = vec![
         create_test_entry("project", true),
         create_test_entry("project/README.md", false), // File at project level
@@ -216,8 +207,8 @@ fn test_no_redundancy_with_mixed_content() {
     ];
 
     let redundant = PathUtils::analyze_redundant_folders(&entries);
-    // Since project directory has files and multiple subdirectories, it's not redundant
-    assert_eq!(redundant, None);
+    // project wraps everything, so it is redundant even though it holds files and several subdirectories
+    assert_eq!(redundant, Some(PathBuf::from("project")));
 }
 
 #[test]

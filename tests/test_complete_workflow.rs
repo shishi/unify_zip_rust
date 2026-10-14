@@ -13,7 +13,8 @@ fn create_test_zip_archive(zip_path: &Path) -> anyhow::Result<()> {
         .compression_method(zip::CompressionMethod::Deflated);
 
     // Create a redundant directory structure: wrapper/content/actual_files
-    // This structure should be flattened to just content/actual_files
+    // Both wrapper and content hold nothing but the next level, so processing
+    // should flatten the archive to actual_files at the root
 
     // Add directory entries
     zip.add_directory("wrapper/", options)?;
@@ -64,6 +65,17 @@ CompressLevel=9
 "#;
     fs::write(config_path, config_content)?;
     Ok(())
+}
+
+/// List the entry names of a ZIP archive in archive order
+fn zip_entry_names(zip_path: &Path) -> anyhow::Result<Vec<String>> {
+    let file = fs::File::open(zip_path)?;
+    let mut archive = zip::ZipArchive::new(file)?;
+    let mut names = Vec::new();
+    for i in 0..archive.len() {
+        names.push(archive.by_index(i)?.name().to_string());
+    }
+    Ok(names)
 }
 
 #[test]
@@ -137,43 +149,34 @@ fn test_complete_archive_processing_workflow() -> anyhow::Result<()> {
     println!("Found processed archive: {:?}", processed_archive);
 
     // Verify the processed archive contents
-    let processed_file = fs::File::open(processed_archive)?;
-    let mut processed_zip = zip::ZipArchive::new(processed_file)?;
+    let processed_files = zip_entry_names(processed_archive)?;
 
-    println!("Processed archive contains {} entries", processed_zip.len());
-
-    // Collect all file names in the processed archive
-    let mut processed_files = Vec::new();
-    for i in 0..processed_zip.len() {
-        let entry = processed_zip.by_index(i)?;
-        processed_files.push(entry.name().to_string());
-    }
-
+    println!("Processed archive contains {} entries", processed_files.len());
     println!("Files in processed archive:");
     for file in &processed_files {
         println!("  - {}", file);
     }
 
     // Verify redundant directory structure was removed
-    // Files should now start with "content/" instead of "wrapper/content/"
+    // Files should now sit at the root instead of under "wrapper/content/"
     let files_with_wrapper: Vec<&String> = processed_files
         .iter()
-        .filter(|name| name.starts_with("wrapper/"))
+        .filter(|name| name.starts_with("wrapper/") || name.starts_with("content/"))
         .collect();
-    assert!(files_with_wrapper.is_empty(), 
-        "Redundant 'wrapper/' prefix should be removed, but found: {:?}", files_with_wrapper);
+    assert!(files_with_wrapper.is_empty(),
+        "Redundant 'wrapper/content/' prefix should be removed, but found: {:?}", files_with_wrapper);
 
     // Verify expected files are present (without redundant prefix)
     let expected_files = [
-        "content/README.md",
-        "content/main.rs", 
-        "content/docs/guide.md",
-        "content/src/lib.rs",
+        "README.md",
+        "main.rs",
+        "docs/guide.md",
+        "src/lib.rs",
     ];
 
     for expected_file in &expected_files {
-        assert!(processed_files.iter().any(|f| f == expected_file || f.ends_with(expected_file)),
-            "Expected file '{}' not found in processed archive. Files: {:?}", 
+        assert!(processed_files.iter().any(|f| f == expected_file),
+            "Expected file '{}' not found in processed archive. Files: {:?}",
             expected_file, processed_files);
     }
 
@@ -279,6 +282,11 @@ fn test_archive_with_deep_redundant_nesting() -> anyhow::Result<()> {
 
     // Should detect and remove deep redundant nesting
     assert!(result > 0); // Should have processed 1 archive
+
+    // All five levels wrapped the two files, so the new archive holds only the files
+    let mut processed_files = zip_entry_names(&original_zip)?;
+    processed_files.sort();
+    assert_eq!(processed_files, vec!["data.csv", "important.txt"]);
 
     println!("Deep nesting test passed: {:?}", result);
 
